@@ -5,6 +5,7 @@ import random
 import os
 import html
 import feedparser
+import re
 from datetime import datetime, timedelta
 
 app = FastAPI(title="CityVibe API")
@@ -16,7 +17,6 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 
-# --- ИИ И ПОГОДА ---
 async def get_gigachat_token() -> str | None:
     if not GIGACHAT_AUTH_KEY: return None
     async with httpx.AsyncClient(verify=False) as client:
@@ -47,7 +47,6 @@ async def get_weather(city_code: str) -> str:
     except: pass
     return "Погода неизвестна"
 
-# --- СБОР ДАННЫХ ---
 def score_event(event: dict, interests: list) -> float:
     score = sum(8.0 for i in interests if i in [c.get("slug", "") for c in event.get("categories", [])])
     if "бесплат" in str(event.get("price", "")).lower(): score += 2.0
@@ -79,7 +78,7 @@ async def fetch_events(city: str, days: int) -> list:
                 loc = e.get("location", {})
                 parsed_events.append({
                     "id": e.get("id"), "title": html.unescape(e.get("name", "")),
-                    "description": html.unescape(e.get("description", "")), # Добавили описание!
+                    "description": html.unescape(e.get("description", "")),
                     "dates": [{"start": start_ts, "end": None}],
                     "place": {"title": f"{loc.get('city', '')}, {loc.get('name', '')}".strip(", ")},
                     "price": "Бесплатно" if e.get("is_free") else "Уточнять",
@@ -96,7 +95,23 @@ async def fetch_news() -> list:
             try:
                 r = await c.get(url)
                 for e in feedparser.parse(r.text).entries[:10]:
-                    news.append({"title": html.unescape(e.get("title", "")), "link": e.get("link", ""), "summary": html.unescape(e.get("summary", ""))[:200]})
+                    # Пытаемся достать максимально прямую ссылку
+                    link = e.get("link", "")
+                    # Если ссылка ведет на главную или пустая, берем из guid
+                    if not link or link.endswith(".ru/") or link.endswith(".ru"):
+                        guid = e.get("guid", "")
+                        if guid.startswith("http"): link = guid
+                    
+                    # Если ссылка всё ещё странная, ищем ссылку в HTML описании
+                    if link in ("https://www.tatar-inform.ru/", "https://realnoevremya.ru/", "https://www.business-gazeta.ru/"):
+                        match = re.search(r'href=["\'](https?://[^"\']+)["\']', e.get("summary", ""))
+                        if match: link = match.group(1)
+
+                    news.append({
+                        "title": html.unescape(e.get("title", "")), 
+                        "link": link.strip(), 
+                        "summary": html.unescape(e.get("summary", ""))[:200]
+                    })
             except: continue
     return news if news else [{"title": "Нет новостей", "link": "", "summary": ""}]
 
@@ -111,7 +126,6 @@ def _event_json(e: dict, score: float) -> dict:
         "categories": [c.get("slug", "") for c in e.get("categories", [])], "score": round(score, 2)
     }
 
-# --- ЭНДПОИНТЫ ---
 @app.get("/api/recommendations")
 async def recommendations(city: str = Query("kzn"), interests: str = Query(""), days: int = Query(30)):
     ints = [i.strip() for i in interests.split(",") if i.strip()]
