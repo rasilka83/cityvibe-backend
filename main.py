@@ -125,36 +125,75 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
-    end = today + timedelta(days=days)
+    
+    # Мапинг городов (Timepad использует русские названия)
+    city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург"}
+    city_name = city_map.get(city, "Казань")
+    
+    # Параметры запроса к Timepad
     params = {
-        "location": city,
-        "actual_since": int(today.timestamp()),
-        "actual_until": int(end.timestamp()),
-        "fields": "id,title,dates,place,description,images,categories,price,site_url",
-        "page_size": 100,
-        "expand": "place",
+        "cities": city_name,
+        "limit": 40, # Берем 40 ближайших событий
+        "sort": "starts_at",
     }
-    # Усиленная маскировка под реальный браузер
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Origin": "https://kudago.com",
-        "Referer": "https://kudago.com/kzn/events/",
-        "Connection": "keep-alive"
+        "Accept": "application/json",
     }
-    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as c:
+    
+    async with httpx.AsyncClient(timeout=20, headers=headers) as c:
         try:
-            r = await c.get(f"{KUDA_GO}/events/", params=params)
+            r = await c.get("https://api.timepad.ru/v1/events", params=params)
             if r.status_code == 200:
-                print("УСПЕХ: KudaGo ответил 200! Данные получены.")
-                return r.json().get("results", [])
+                data = r.json().get("values", [])
+                print(f"УСПЕХ: Timepad вернул {len(data)} событий!")
+                
+                parsed_events = []
+                for e in data:
+                    # Парсим дату
+                    start_str = e.get("starts_at")
+                    start_ts = int(datetime.fromisoformat(start_str).timestamp()) if start_str else None
+                    
+                    # Картинка
+                    img_data = e.get("poster_thumb") or {}
+                    img = img_data.get("big") or img_data.get("default") or ""
+                    
+                    # Цена
+                    price = "Бесплатно" if e.get("is_free") else ""
+                    if not price and e.get("ticket_types"):
+                        prices = [t.get("price", 0) for t in e.get("ticket_types") if t.get("price")]
+                        if prices:
+                            price = f"от {min(prices)} руб."
+                        else:
+                            price = "Уточнять"
+                            
+                    # Категории
+                    cats = [{"slug": cat.get("name", "").lower()} for cat in e.get("categories", [])]
+                    
+                    # Место
+                    loc = e.get("location", {})
+                    place_name = loc.get("name", "")
+                    place_city = loc.get("city", "")
+                    place = f"{place_city}, {place_name}" if place_name else place_city
+                    
+                    parsed_events.append({
+                        "id": e.get("id"),
+                        "title": e.get("name", ""),
+                        "dates": [{"start": start_ts, "end": None}],
+                        "place": {"title": place},
+                        "price": price,
+                        "site_url": e.get("url", ""),
+                        "images": [{"image": img}],
+                        "categories": cats
+                    })
+                return parsed_events
             else:
-                print(f"ОШИБКА: KudaGo вернул {r.status_code}. Тело: {r.text[:200]}")
-        except Exception as e:
-            print(f"ОШИБКА СЕТИ: {e}")
+                print(f"ОШИБКА Timepad: {r.status_code}")
+        except Exception as ex:
+            print(f"ОШИБКА СЕТИ: {ex}")
 
-    # Если KudaGo заблокировал запрос, возвращаем тестовые события (демо-режим)
+    # Если Timepad не ответил, возвращаем демо-заглушки (чтобы приложение не падало)
     return [
         {
             "id": 1001,
