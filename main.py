@@ -4,7 +4,6 @@ import httpx
 import random
 import os
 import html
-import json
 import feedparser
 from datetime import datetime, timedelta
 
@@ -30,40 +29,24 @@ def score_event(event: dict, interests: list) -> float:
         score += 1.0
     return score
 
-def score_news(item: dict, interests: list) -> float:
-    text = (item.get("title", "") + " " + item.get("summary", "")).lower()
-    score = 0.0
-    keywords = ["концерт", "театр", "выставк", "кино", "фестивал", "спорт", "лекци"]
-    for kw in keywords:
-        if kw in text: score += 3.0
-    return score
-
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
     end_date = today + timedelta(days=days)
-    
-    # Словарь популярных городов
-    city_map = {
-        "kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург",
-        "ekb": "Екатеринбург", "nsk": "Новосибирск", "nnv": "Нижний Новгород",
-        "sam": "Самара", "ufa": "Уфа", "krd": "Краснодар", "sochi": "Сочи"
-    }
+    city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург", "ekb": "Екатеринбург", "nsk": "Новосибирск"}
     city_name = city_map.get(city.lower(), city.title())
-    
     token = os.getenv("TIMEPAD_TOKEN", "")
     
     params = {
         "cities": city_name,
-        "limit": 50, # Берем больше событий
+        "limit": 100,
         "sort": "starts_at",
         "fields": "location,poster_image,poster_thumb,categories",
         "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"),
-        "starts_at_max": end_date.strftime("%Y-%m-%dT%H:%M:%S"), # Фильтр по дате окончания
+        "starts_at_max": end_date.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     
     headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if token: headers["Authorization"] = f"Bearer {token}"
 
     try:
         async with httpx.AsyncClient(timeout=20, headers=headers) as c:
@@ -77,31 +60,30 @@ async def fetch_events(city: str, days: int) -> list:
                 start_str = e.get("starts_at")
                 start_ts = int(today.timestamp())
                 if start_str:
-                    try:
-                        start_ts = int(datetime.strptime(start_str[:19], "%Y-%m-%dT%H:%M:%S").timestamp())
+                    try: start_ts = int(datetime.strptime(start_str[:19], "%Y-%m-%dT%H:%M:%S").timestamp())
                     except: pass
                 
                 img_data = e.get("poster_image") or e.get("poster_thumb") or {}
                 img = img_data.get("default_url") or img_data.get("big") or ""
-                
                 price = "Бесплатно" if e.get("is_free") else "Уточнять"
                 loc = e.get("location", {})
                 place = f"{loc.get('city', '')}, {loc.get('name', '')}".strip(", ")
                 
-                # Получаем категории и переводим в нижний регистр
-                cats = [cat.get("name", "").lower() for cat in e.get("categories", [])]
+                cats_data = []
+                for cat in e.get("categories", []):
+                    name = cat.get("name", "").lower()
+                    slug = cat.get("slug", "").lower()
+                    cats_data.append({"slug": f"{name} {slug}"})
                 
                 parsed_events.append({
                     "id": e.get("id"), "title": clean_title,
                     "dates": [{"start": start_ts, "end": None}],
                     "place": {"title": place}, "price": price,
                     "site_url": e.get("url", ""), "images": [{"image": img}],
-                    "categories": [{"slug": c} for c in cats]
+                    "categories": cats_data
                 })
             return parsed_events
-    except Exception as ex:
-        print(f"ОШИБКА: {ex}")
-        return []
+    except: return []
 
 async def fetch_news() -> list:
     news = []
@@ -117,6 +99,9 @@ async def fetch_news() -> list:
                         "summary": html.unescape(e.get("summary", ""))[:200],
                     })
             except: continue
+            
+    if not news:
+        news = [{"title": "Новости временно недоступны", "link": "", "summary": "Не удалось загрузить RSS-ленты. Проверьте работу сервера."}]
     return news
 
 def _event_json(e: dict, score: float) -> dict:
@@ -133,27 +118,22 @@ def _event_json(e: dict, score: float) -> dict:
     }
 
 @app.get("/api/recommendations")
-async def recommendations(
-    city: str = Query("kzn"), interests: str = Query(""),
-    days: int = Query(30, ge=1, le=90), limit: int = Query(50, ge=1, le=100)
-):
+async def recommendations(city: str = Query("kzn"), interests: str = Query(""), days: int = Query(30)):
     ints = [i.strip() for i in interests.split(",") if i.strip()]
     events = await fetch_events(city, days)
     scored = sorted(((e, score_event(e, ints) + random.random()) for e in events), key=lambda x: -x[1])
-    return {"city": city, "days": days, "count": len(events), "events": [_event_json(e, s) for e, s in scored[:limit]]}
+    return {"city": city, "days": days, "count": len(events), "events": [_event_json(e, s) for e, s in scored[:100]]}
 
 @app.get("/api/smart-digest")
 async def smart_digest(city: str = Query("kzn")):
     events = await fetch_events(city, 30)
     news_items = await fetch_news()
-
     ev_sorted = sorted(((e, score_event(e, [])) for e in events), key=lambda x: -x[1])[:5]
-    news_sorted = sorted(((n, score_news(n, [])) for n in news_items), key=lambda x: -x[1])[:5]
 
     return {
         "source": "smart-fallback",
         "summary": "Мы проанализировали городские новости и афишу. Вот что сейчас происходит в городе.",
         "recommendation": "Рекомендуем обратить внимание на эти события и новости. Они лучше всего подходят для отличного отдыха.",
         "top_events": [_event_json(e, s) for e, s in ev_sorted],
-        "top_news": [{**n, "score": round(s, 2)} for n, s in news_sorted],
+        "top_news": news_items[:5],
     }
