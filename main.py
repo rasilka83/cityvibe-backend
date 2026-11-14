@@ -5,7 +5,6 @@ import random
 import os
 import html
 import feedparser
-import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -54,22 +53,44 @@ def score_event(event: dict, interests: list) -> float:
     if (event.get("images") or [{}])[0].get("image"): score += 1.0
     return score
 
+def make_error_event(title: str, desc: str, today: datetime) -> dict:
+    """Создает фейковое событие для вывода ошибки на экран"""
+    return {
+        "id": random.randint(10000, 99999), "title": title,
+        "description": desc,
+        "dates": [{"start": int(today.timestamp()), "end": None}],
+        "place": {"title": "Отладка"}, "price": "Ошибка",
+        "site_url": "", "images": [{"image": ""}], "categories": []
+    }
+
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
     end_date = today + timedelta(days=days)
     city_name = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург", "ekb": "Екатеринбург", "nsk": "Новосибирск"}.get(city.lower(), "Казань")
-    token = os.getenv("TIMEPAD_TOKEN", "")
     
-    # Увеличили лимит до 300, чтобы захватить больше категорий
-    params = {"cities": city_name, "limit": 300, "sort": "starts_at", "fields": "location,poster_image,poster_thumb,categories,description", "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), "starts_at_max": end_date.strftime("%Y-%m-%dT%H:%M:%S")}
+    # DEBUG: Проверяем токен
+    token = os.getenv("TIMEPAD_TOKEN", "")
+    if not token:
+        return [make_error_event("ОШИБКА: Токен Timepad не найден", "Добавьте TIMEPAD_TOKEN в SpaceWeb", today)]
+
+    params = {"cities": city_name, "limit": 100, "sort": "starts_at", "fields": "location,poster_image,poster_thumb,categories,description", "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), "starts_at_max": end_date.strftime("%Y-%m-%dT%H:%M:%S")}
     headers = {"Accept": "application/json"}
     if token: headers["Authorization"] = f"Bearer {token}"
 
     try:
         async with httpx.AsyncClient(timeout=20, headers=headers) as c:
             r = await c.get("https://api.timepad.ru/v1/events", params=params)
-            if r.status_code != 200: return []
+            
+            # DEBUG: Если Timepad вернул ошибку
+            if r.status_code != 200:
+                return [make_error_event(f"ОШИБКА API {r.status_code}", r.text[:200], today)]
+            
             data = r.json().get("values", [])
+            
+            # DEBUG: Если 0 событий
+            if len(data) == 0:
+                return [make_error_event("0 событий от Timepad", f"Параметры запроса: {params}", today)]
+            
             parsed_events = []
             for e in data:
                 start_ts = int(today.timestamp())
@@ -88,7 +109,9 @@ async def fetch_events(city: str, days: int) -> list:
                     "categories": [{"slug": f"{cat.get('name','').lower()} {cat.get('slug','').lower()}"} for cat in e.get("categories", [])]
                 })
             return parsed_events
-    except: return []
+    except Exception as ex:
+        # DEBUG: Если произошла ошибка сети или кода
+        return [make_error_event("ОШИБКА PYTHON", str(ex)[:200], today)]
 
 async def fetch_news() -> list:
     news = []
@@ -100,7 +123,6 @@ async def fetch_news() -> list:
                     title = html.unescape(e.get("title", ""))
                     link = e.get("link", "")
                     
-                    # Умная защита: если ссылка ведет на главную или пустая, кидаем на поиск Яндекса по заголовку
                     if not link or link.endswith(".ru/") or link.endswith(".ru"):
                         link = f"https://yandex.ru/search/?text={quote(title)}"
                     
@@ -128,7 +150,7 @@ async def recommendations(city: str = Query("kzn"), interests: str = Query(""), 
     ints = [i.strip() for i in interests.split(",") if i.strip()]
     events = await fetch_events(city, days)
     scored = sorted(((e, score_event(e, ints) + random.random()) for e in events), key=lambda x: -x[1])
-    return {"city": city, "days": days, "count": len(events), "events": [_event_json(e, s) for e, s in scored[:300]]}
+    return {"city": city, "days": days, "count": len(events), "events": [_event_json(e, s) for e, s in scored[:100]]}
 
 @app.get("/api/smart-digest")
 async def smart_digest(city: str = Query("kzn")):
