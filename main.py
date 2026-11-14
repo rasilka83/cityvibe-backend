@@ -7,6 +7,7 @@ import html
 import feedparser
 import re
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 app = FastAPI(title="CityVibe API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -59,7 +60,8 @@ async def fetch_events(city: str, days: int) -> list:
     city_name = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург", "ekb": "Екатеринбург", "nsk": "Новосибирск"}.get(city.lower(), "Казань")
     token = os.getenv("TIMEPAD_TOKEN", "")
     
-    params = {"cities": city_name, "limit": 100, "sort": "starts_at", "fields": "location,poster_image,poster_thumb,categories,description", "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), "starts_at_max": end_date.strftime("%Y-%m-%dT%H:%M:%S")}
+    # Увеличили лимит до 300, чтобы захватить больше категорий
+    params = {"cities": city_name, "limit": 300, "sort": "starts_at", "fields": "location,poster_image,poster_thumb,categories,description", "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), "starts_at_max": end_date.strftime("%Y-%m-%dT%H:%M:%S")}
     headers = {"Accept": "application/json"}
     if token: headers["Authorization"] = f"Bearer {token}"
 
@@ -95,21 +97,16 @@ async def fetch_news() -> list:
             try:
                 r = await c.get(url)
                 for e in feedparser.parse(r.text).entries[:10]:
-                    # Пытаемся достать максимально прямую ссылку
+                    title = html.unescape(e.get("title", ""))
                     link = e.get("link", "")
-                    # Если ссылка ведет на главную или пустая, берем из guid
-                    if not link or link.endswith(".ru/") or link.endswith(".ru"):
-                        guid = e.get("guid", "")
-                        if guid.startswith("http"): link = guid
                     
-                    # Если ссылка всё ещё странная, ищем ссылку в HTML описании
-                    if link in ("https://www.tatar-inform.ru/", "https://realnoevremya.ru/", "https://www.business-gazeta.ru/"):
-                        match = re.search(r'href=["\'](https?://[^"\']+)["\']', e.get("summary", ""))
-                        if match: link = match.group(1)
-
+                    # Умная защита: если ссылка ведет на главную или пустая, кидаем на поиск Яндекса по заголовку
+                    if not link or link.endswith(".ru/") or link.endswith(".ru"):
+                        link = f"https://yandex.ru/search/?text={quote(title)}"
+                    
                     news.append({
-                        "title": html.unescape(e.get("title", "")), 
-                        "link": link.strip(), 
+                        "title": title, 
+                        "link": link, 
                         "summary": html.unescape(e.get("summary", ""))[:200]
                     })
             except: continue
@@ -131,7 +128,7 @@ async def recommendations(city: str = Query("kzn"), interests: str = Query(""), 
     ints = [i.strip() for i in interests.split(",") if i.strip()]
     events = await fetch_events(city, days)
     scored = sorted(((e, score_event(e, ints) + random.random()) for e in events), key=lambda x: -x[1])
-    return {"city": city, "days": days, "count": len(events), "events": [_event_json(e, s) for e, s in scored[:100]]}
+    return {"city": city, "days": days, "count": len(events), "events": [_event_json(e, s) for e, s in scored[:300]]}
 
 @app.get("/api/smart-digest")
 async def smart_digest(city: str = Query("kzn")):
