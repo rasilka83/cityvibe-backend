@@ -126,19 +126,17 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
     
-    # Мапинг городов (Timepad использует русские названия)
     city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург"}
     city_name = city_map.get(city, "Казань")
     
-    # Параметры запроса к Timepad
     params = {
         "cities": city_name,
-        "limit": 40, # Берем 40 ближайших событий
+        "limit": 40,
         "sort": "starts_at",
     }
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json",
     }
     
@@ -151,15 +149,20 @@ async def fetch_events(city: str, days: int) -> list:
                 
                 parsed_events = []
                 for e in data:
-                    # Парсим дату
+                    # Безопасный парсинг даты
                     start_str = e.get("starts_at")
-                    start_ts = int(datetime.fromisoformat(start_str).timestamp()) if start_str else None
+                    start_ts = int(today.timestamp()) + 86400 # Заглушка на завтра, если дата не распарсится
+                    if start_str:
+                        try:
+                            # Timepad отдает формат вроде 2024-05-25T19:00:00+0300
+                            clean_str = start_str[:19] # Берем только "2024-05-25T19:00:00"
+                            start_ts = int(datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S").timestamp())
+                        except:
+                            pass
                     
-                    # Картинка
                     img_data = e.get("poster_thumb") or {}
                     img = img_data.get("big") or img_data.get("default") or ""
                     
-                    # Цена
                     price = "Бесплатно" if e.get("is_free") else ""
                     if not price and e.get("ticket_types"):
                         prices = [t.get("price", 0) for t in e.get("ticket_types") if t.get("price")]
@@ -168,10 +171,8 @@ async def fetch_events(city: str, days: int) -> list:
                         else:
                             price = "Уточнять"
                             
-                    # Категории
                     cats = [{"slug": cat.get("name", "").lower()} for cat in e.get("categories", [])]
                     
-                    # Место
                     loc = e.get("location", {})
                     place_name = loc.get("name", "")
                     place_city = loc.get("city", "")
@@ -188,32 +189,20 @@ async def fetch_events(city: str, days: int) -> list:
                         "categories": cats
                     })
                 return parsed_events
-            else:
-                print(f"ОШИБКА Timepad: {r.status_code}")
         except Exception as ex:
             print(f"ОШИБКА СЕТИ: {ex}")
 
-    # Если Timepad не ответил, возвращаем демо-заглушки (чтобы приложение не падало)
+    # Демо-режим, если ничего не вышло
     return [
         {
             "id": 1001,
             "title": "Тестовый концерт (Демо-режим)",
-            "dates": [{"start": int(today.timestamp()) + 86400, "end": int(today.timestamp()) + 90000}],
+            "dates": [{"start": int(today.timestamp()) + 86400, "end": None}],
             "place": {"title": "Казань, Кремль"},
             "price": "Бесплатно",
             "site_url": "https://kudago.com",
             "images": [{"image": "https://picsum.photos/400/200?random=1"}],
             "categories": [{"slug": "concert"}]
-        },
-        {
-            "id": 1002,
-            "title": "Театральная постановка (Демо-режим)",
-            "dates": [{"start": int(today.timestamp()) + 172800, "end": int(today.timestamp()) + 180000}],
-            "place": {"title": "Казань, Театр им. Качалова"},
-            "price": "500 руб",
-            "site_url": "https://kudago.com",
-            "images": [{"image": "https://picsum.photos/400/200?random=2"}],
-            "categories": [{"slug": "theater"}]
         }
     ]
 def _event_json(e: dict, score: float) -> dict:
