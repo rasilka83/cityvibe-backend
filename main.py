@@ -14,33 +14,39 @@ app.add_middleware(
 )
 
 def score_event(event: dict, interests: list) -> float:
+    """Оценка события под интересы пользователя."""
     score = 0.0
     cats = [c.get("slug", "") for c in event.get("categories", [])]
     score += sum(8.0 for i in interests if i in cats)
+    
     price_text = str(event.get("price", "")).lower()
     if "бесплат" in price_text or not price_text.strip():
         score += 2.0
+        
     if (event.get("images") or [{}])[0].get("image"):
         score += 1.0
     return score
 
 async def fetch_events(city: str, days: int) -> list:
+    """Запрос к Timepad API с передачей названия города и токена."""
     today = datetime.now()
     
-    # ID городов в Timepad (14 - Казань)
-    city_map = {"kzn": "14", "msk": "1", "spb": "2"}
-    city_id = city_map.get(city, "14")
+    # Timepad лучше понимает названия городов
+    city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург"}
+    city_name = city_map.get(city, "Казань")
     
     # Берем токен из переменных окружения SpaceWeb
     token = os.getenv("TIMEPAD_TOKEN", "")
     
-    # Параметры запроса
+    # Параметры запроса (ищем только будущие события)
     params = {
-        "cities": city_id,
-        "limit": 30
+        "cities": city_name,
+        "limit": 20,
+        "sort": "starts_at",
+        "fields": "location,poster_image,poster_thumb",
+        "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S")
     }
     
-    # Если токен есть, добавляем его в заголовки (Timepad требует Bearer)
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -51,6 +57,7 @@ async def fetch_events(city: str, days: int) -> list:
         async with httpx.AsyncClient(timeout=20, headers=headers) as c:
             r = await c.get("https://api.timepad.ru/v1/events", params=params)
             
+            # Если ошибка API, показываем её на экране
             if r.status_code != 200:
                 print(f"ОШИБКА API {r.status_code}: {r.text}")
                 return [{
@@ -62,8 +69,17 @@ async def fetch_events(city: str, days: int) -> list:
                 }]
             
             data = r.json().get("values", [])
-            parsed_events = []
             
+            # Если событий 0, выводим отладочную информацию
+            if len(data) == 0:
+                return [{
+                    "id": 999, "title": "0 событий от Timepad",
+                    "dates": [{"start": int(today.timestamp()), "end": None}],
+                    "place": {"title": f"Город: {city_name}, Дата: {today.strftime('%Y-%m-%d')}"}, 
+                    "price": "0", "site_url": "", "images": [{"image": ""}], "categories": []
+                }]
+
+            parsed_events = []
             for e in data:
                 # Парсинг даты
                 start_str = e.get("starts_at")
@@ -119,6 +135,7 @@ async def fetch_events(city: str, days: int) -> list:
         }]
 
 def _event_json(e: dict, score: float) -> dict:
+    """Форматирование события для отправки в мобильное приложение."""
     dates = e.get("dates") or []
     first = dates[0] if dates else {}
     return {
@@ -141,12 +158,15 @@ async def recommendations(
     days: int = Query(14, ge=1, le=30),
     limit: int = Query(30, ge=1, le=100),
 ):
+    """Главный эндпоинт, который вызывает мобильное приложение."""
     ints = [i.strip() for i in interests.split(",") if i.strip()]
     events = await fetch_events(city, days)
+    
     scored = sorted(
         ((e, score_event(e, ints) + random.random()) for e in events),
         key=lambda x: -x[1],
     )
+    
     return {
         "city": city,
         "days": days,
