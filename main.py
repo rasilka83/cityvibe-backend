@@ -134,23 +134,27 @@ async def fetch_events(city: str, days: int) -> list:
         "page_size": 100,
         "expand": "place",
     }
+    # Усиленная маскировка под реальный браузер
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://kudago.com",
+        "Referer": "https://kudago.com/kzn/events/",
+        "Connection": "keep-alive"
     }
-    async with httpx.AsyncClient(timeout=15, headers=headers) as c:
+    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as c:
         try:
             r = await c.get(f"{KUDA_GO}/events/", params=params)
             if r.status_code == 200:
+                print("УСПЕХ: KudaGo ответил 200! Данные получены.")
                 return r.json().get("results", [])
             else:
-                print(f"KudaGo вернул {r.status_code}. Включаем демо-режим.")
+                print(f"ОШИБКА: KudaGo вернул {r.status_code}. Тело: {r.text[:200]}")
         except Exception as e:
-            print(f"Ошибка сети: {e}. Включаем демо-режим.")
+            print(f"ОШИБКА СЕТИ: {e}")
 
-    # Если KudaGo заблокировал запрос, возвращаем тестовые события,
-    # чтобы приложение работало и мы могли продолжить разработку.
+    # Если KudaGo заблокировал запрос, возвращаем тестовые события (демо-режим)
     return [
         {
             "id": 1001,
@@ -173,7 +177,6 @@ async def fetch_events(city: str, days: int) -> list:
             "categories": [{"slug": "theater"}]
         }
     ]
-
 def _event_json(e: dict, score: float) -> dict:
     dates = e.get("dates") or []
     first = dates[0] if dates else {}
