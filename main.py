@@ -126,14 +126,15 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
     
-    # ID городов в Timepad: 1 - Москва, 2 - СПб, 14 - Казань
-    city_ids = {"kzn": "14", "msk": "1", "spb": "2"}
-    city_id = city_ids.get(city, "14")
+    # В Timepad нужно передавать название города, а не ID
+    city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург"}
+    city_name = city_map.get(city, "Казань")
     
     params = {
-        "cities": city_id,
+        "cities": city_name,          # Название города
         "limit": 40,
-        "sort": "starts_at",
+        "sort": "starts_at",          # Сортировка по дате начала
+        "fields": "location",         # Запрашиваем информацию о месте проведения
         "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), # Только будущие события
     }
     
@@ -145,7 +146,6 @@ async def fetch_events(city: str, days: int) -> list:
     async with httpx.AsyncClient(timeout=20, headers=headers) as c:
         try:
             r = await c.get("https://api.timepad.ru/v1/events", params=params)
-            # Выводим статус в логи, чтобы мы могли проверить
             print(f"Timepad status: {r.status_code}")
             
             if r.status_code == 200:
@@ -163,8 +163,9 @@ async def fetch_events(city: str, days: int) -> list:
                         except:
                             pass
                     
-                    img_data = e.get("poster_thumb") or {}
-                    img = img_data.get("big") or img_data.get("default") or ""
+                    # Картинка может быть в poster_image или poster_thumb
+                    img_data = e.get("poster_image") or e.get("poster_thumb") or {}
+                    img = img_data.get("default_url") or img_data.get("big") or img_data.get("default") or ""
                     
                     price = "Бесплатно" if e.get("is_free") else ""
                     if not price and e.get("ticket_types"):
@@ -197,7 +198,7 @@ async def fetch_events(city: str, days: int) -> list:
         except Exception as ex:
             print(f"ОШИБКА СЕТИ: {ex}")
 
-    # Демо-режим (сработает, если Timepad недоступен)
+    # Демо-режим (сработает, только если Timepad недоступен)
     return [
         {
             "id": 1001,
