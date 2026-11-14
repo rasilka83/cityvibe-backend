@@ -126,13 +126,15 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
     
-    city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург"}
-    city_name = city_map.get(city, "Казань")
+    # ID городов в Timepad: 1 - Москва, 2 - СПб, 14 - Казань
+    city_ids = {"kzn": "14", "msk": "1", "spb": "2"}
+    city_id = city_ids.get(city, "14")
     
     params = {
-        "cities": city_name,
+        "cities": city_id,
         "limit": 40,
         "sort": "starts_at",
+        "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), # Только будущие события
     }
     
     headers = {
@@ -143,19 +145,20 @@ async def fetch_events(city: str, days: int) -> list:
     async with httpx.AsyncClient(timeout=20, headers=headers) as c:
         try:
             r = await c.get("https://api.timepad.ru/v1/events", params=params)
+            # Выводим статус в логи, чтобы мы могли проверить
+            print(f"Timepad status: {r.status_code}")
+            
             if r.status_code == 200:
                 data = r.json().get("values", [])
                 print(f"УСПЕХ: Timepad вернул {len(data)} событий!")
                 
                 parsed_events = []
                 for e in data:
-                    # Безопасный парсинг даты
                     start_str = e.get("starts_at")
-                    start_ts = int(today.timestamp()) + 86400 # Заглушка на завтра, если дата не распарсится
+                    start_ts = int(today.timestamp()) + 86400
                     if start_str:
                         try:
-                            # Timepad отдает формат вроде 2024-05-25T19:00:00+0300
-                            clean_str = start_str[:19] # Берем только "2024-05-25T19:00:00"
+                            clean_str = start_str[:19]
                             start_ts = int(datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S").timestamp())
                         except:
                             pass
@@ -189,10 +192,12 @@ async def fetch_events(city: str, days: int) -> list:
                         "categories": cats
                     })
                 return parsed_events
+            else:
+                print(f"ОШИБКА Timepad: {r.text}")
         except Exception as ex:
             print(f"ОШИБКА СЕТИ: {ex}")
 
-    # Демо-режим, если ничего не вышло
+    # Демо-режим (сработает, если Timepad недоступен)
     return [
         {
             "id": 1001,
