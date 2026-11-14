@@ -125,17 +125,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 async def fetch_events(city: str, days: int) -> list:
     today = datetime.now()
-    
-    # В Timepad нужно передавать название города, а не ID
     city_map = {"kzn": "Казань", "msk": "Москва", "spb": "Санкт-Петербург"}
     city_name = city_map.get(city, "Казань")
     
     params = {
-        "cities": city_name,          # Название города
-        "limit": 40,
-        "sort": "starts_at",          # Сортировка по дате начала
-        "fields": "location",         # Запрашиваем информацию о месте проведения
-        "starts_at_min": today.strftime("%Y-%m-%dT%H:%M:%S"), # Только будущие события
+        "cities": city_name,
+        "limit": 10, # Уменьшили лимит для теста
+        "sort": "starts_at",
     }
     
     headers = {
@@ -143,74 +139,63 @@ async def fetch_events(city: str, days: int) -> list:
         "Accept": "application/json",
     }
     
-    async with httpx.AsyncClient(timeout=20, headers=headers) as c:
+    error_text = "Неизвестная ошибка"
+    
+    async with httpx.AsyncClient(timeout=15, headers=headers) as c:
         try:
             r = await c.get("https://api.timepad.ru/v1/events", params=params)
-            print(f"Timepad status: {r.status_code}")
             
-            if r.status_code == 200:
-                data = r.json().get("values", [])
-                print(f"УСПЕХ: Timepad вернул {len(data)} событий!")
-                
-                parsed_events = []
-                for e in data:
-                    start_str = e.get("starts_at")
-                    start_ts = int(today.timestamp()) + 86400
-                    if start_str:
-                        try:
-                            clean_str = start_str[:19]
-                            start_ts = int(datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S").timestamp())
-                        except:
-                            pass
-                    
-                    # Картинка может быть в poster_image или poster_thumb
-                    img_data = e.get("poster_image") or e.get("poster_thumb") or {}
-                    img = img_data.get("default_url") or img_data.get("big") or img_data.get("default") or ""
-                    
-                    price = "Бесплатно" if e.get("is_free") else ""
-                    if not price and e.get("ticket_types"):
-                        prices = [t.get("price", 0) for t in e.get("ticket_types") if t.get("price")]
-                        if prices:
-                            price = f"от {min(prices)} руб."
-                        else:
-                            price = "Уточнять"
-                            
-                    cats = [{"slug": cat.get("name", "").lower()} for cat in e.get("categories", [])]
-                    
-                    loc = e.get("location", {})
-                    place_name = loc.get("name", "")
-                    place_city = loc.get("city", "")
-                    place = f"{place_city}, {place_name}" if place_name else place_city
-                    
-                    parsed_events.append({
-                        "id": e.get("id"),
-                        "title": e.get("name", ""),
-                        "dates": [{"start": start_ts, "end": None}],
-                        "place": {"title": place},
-                        "price": price,
-                        "site_url": e.get("url", ""),
-                        "images": [{"image": img}],
-                        "categories": cats
-                    })
-                return parsed_events
+            if r.status_code != 200:
+                error_text = f"HTTP {r.status_code}: {r.text[:100]}"
             else:
-                print(f"ОШИБКА Timepad: {r.text}")
+                data = r.json().get("values", [])
+                if len(data) == 0:
+                    error_text = "Timepad вернул 0 событий. Возможно, нужен API-токен."
+                else:
+                    # ... парсинг ...
+                    parsed = []
+                    for e in data:
+                        start_str = e.get("starts_at")
+                        start_ts = int(today.timestamp()) + 86400
+                        if start_str:
+                            try:
+                                clean_str = start_str[:19]
+                                start_ts = int(datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S").timestamp())
+                            except: pass
+                        
+                        img_data = e.get("poster_image") or e.get("poster_thumb") or {}
+                        img = img_data.get("default_url") or img_data.get("big") or img_data.get("default") or ""
+                        
+                        loc = e.get("location", {})
+                        place_name = loc.get("name", "")
+                        place_city = loc.get("city", "")
+                        place = f"{place_city}, {place_name}" if place_name else place_city
+                        
+                        parsed.append({
+                            "id": e.get("id"),
+                            "title": e.get("name", ""),
+                            "dates": [{"start": start_ts, "end": None}],
+                            "place": {"title": place},
+                            "price": "Бесплатно" if e.get("is_free") else "Уточнять",
+                            "site_url": e.get("url", ""),
+                            "images": [{"image": img}],
+                            "categories": [{"slug": cat.get("name", "").lower()} for cat in e.get("categories", [])]
+                        })
+                    return parsed
         except Exception as ex:
-            print(f"ОШИБКА СЕТИ: {ex}")
+            error_text = f"Сеть: {str(ex)}"
 
-    # Демо-режим (сработает, только если Timepad недоступен)
-    return [
-        {
-            "id": 1001,
-            "title": "Тестовый концерт (Демо-режим)",
-            "dates": [{"start": int(today.timestamp()) + 86400, "end": None}],
-            "place": {"title": "Казань, Кремль"},
-            "price": "Бесплатно",
-            "site_url": "https://kudago.com",
-            "images": [{"image": "https://picsum.photos/400/200?random=1"}],
-            "categories": [{"slug": "concert"}]
-        }
-    ]
+    # Если ошибка, выводим её прямо в карточку на экране!
+    return [{
+        "id": 9999,
+        "title": f"ОШИБКА: {error_text}",
+        "dates": [{"start": int(today.timestamp()), "end": None}],
+        "place": {"title": "Проверьте лог"},
+        "price": "0",
+        "site_url": "",
+        "images": [{"image": ""}],
+        "categories": [{"slug": "concert"}]
+    }]
 def _event_json(e: dict, score: float) -> dict:
     dates = e.get("dates") or []
     first = dates[0] if dates else {}
